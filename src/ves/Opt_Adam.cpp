@@ -191,5 +191,6 @@ void Opt_Adam::coeffsUpdate(const unsigned int c_id) {
 }
 
 
+
 }
 }
