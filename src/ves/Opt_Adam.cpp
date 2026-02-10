@@ -130,7 +130,6 @@ Opt_Adam::Opt_Adam(const ActionOptions&ao):
   plumed_massert(epsilon_ > 0 && epsilon_ <= 1, "EPSILON must be between 0 and 1");
   log << "    epsilon: " << epsilon_ << "\n";
 
-
   // set up the coeff vector for the 2nd moment of the gradient (variance)
   for (unsigned i = 0; i < numberOfCoeffsSets(); ++i) {
     var_coeffs_pntrs_.emplace_back(std::unique_ptr<CoeffsVector>(new CoeffsVector(Coeffs(i))));
