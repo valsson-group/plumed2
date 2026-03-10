@@ -141,11 +141,13 @@ Opt_Adam::Opt_Adam(const ActionOptions&ao):
   // set up the coeff vector for the 2nd moment of the gradient (variance)
   for (unsigned i = 0; i < numberOfCoeffsSets(); ++i) {
     var_coeffs_pntrs_.emplace_back(std::unique_ptr<CoeffsVector>(new CoeffsVector(Coeffs(i))));
+    VarCoeffs(i).replaceLabelString("coeffs","grad_var"); 
     VarCoeffs(i).setAllValuesToZero(); // can Coeffs(i) even be non-zero at this point?
 
     // add second set of coefficients to store the maximum values of the 2nd moment
     if (amsgrad_) {
       varmax_coeffs_pntrs_.emplace_back(std::unique_ptr<CoeffsVector>(new CoeffsVector(VarCoeffs(i))));
+      VarmaxCoeffs(i).replaceLabelString("coeffs","grad_varmax");
     }
 
   }
