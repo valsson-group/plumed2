@@ -25,6 +25,7 @@
 
 #include "core/ActionRegister.h"
 #include "core/ActionSet.h"
+#include "tools/File.h"
 
 
 namespace PLMD {
@@ -54,6 +55,11 @@ private:
   std::vector<std::unique_ptr<CoeffsVector>> var_coeffs_pntrs_;
   // used only for AMSGrad variant
   std::vector<std::unique_ptr<CoeffsVector>> varmax_coeffs_pntrs_;
+  std::vector<std::string> state_fnames_;
+  std::vector<std::unique_ptr<OFile>> stateOFiles_;
+  std::vector<std::string> varmax_state_fnames_;
+  std::vector<std::unique_ptr<OFile>> varmaxStateOFiles_;
+  void writeStateFiles(const unsigned int c_id);
 protected:
   CoeffsVector& VarCoeffs(const unsigned int coeffs_id = 0) const;
   CoeffsVector& VarmaxCoeffs(const unsigned int coeffs_id = 0) const;
@@ -83,13 +89,15 @@ void Opt_Adam::registerKeywords(Keywords& keys) {
   Optimizer::useMultipleWalkersKeywords(keys);
   Optimizer::useMaskKeywords(keys);
   Optimizer::useDynamicTargetDistributionKeywords(keys);
+  Optimizer::useRestartKeywords(keys);  // Enables START_OPTIMIZATION_AFRESH
   keys.add("optional","BETA_1","Parameter for the first moment estimate. Defaults to 0.9");
   keys.add("optional","BETA_2","Parameter for the second moment estimate. Defaults to 0.999");
   keys.add("optional","EPSILON","Small parameter to avoid division by zero. Defaults to 1e-8");
   keys.add("optional","ADAMW_WEIGHT_DECAY","Weight decay parameter for the AdamW variant. Defaults to 0");
   keys.addFlag("AMSGRAD", false, "Use the AMSGrad variant");
+  keys.add("optional","ADAM_STATE_FILE","the name of the file to store the Adam optimizer state (2nd moment, time step) for restart. Default: adam_state.data");
+  keys.add("optional","ADAM_VARMAX_STATE_FILE","the name of the file to store the AMSGrad max variance for restart. Default: adam_varmax_state.data");
 }
-
 
 Opt_Adam::Opt_Adam(const ActionOptions&ao):
   PLUMED_VES_OPTIMIZER_INIT(ao),
@@ -133,18 +141,59 @@ Opt_Adam::Opt_Adam(const ActionOptions&ao):
   // set up the coeff vector for the 2nd moment of the gradient (variance)
   for (unsigned i = 0; i < numberOfCoeffsSets(); ++i) {
     var_coeffs_pntrs_.emplace_back(std::unique_ptr<CoeffsVector>(new CoeffsVector(Coeffs(i))));
-    VarCoeffs(i).replaceLabelString("coeffs","grad_var");
     VarCoeffs(i).setAllValuesToZero(); // can Coeffs(i) even be non-zero at this point?
 
     // add second set of coefficients to store the maximum values of the 2nd moment
     if (amsgrad_) {
       varmax_coeffs_pntrs_.emplace_back(std::unique_ptr<CoeffsVector>(new CoeffsVector(VarCoeffs(i))));
-      VarmaxCoeffs(i).replaceLabelString("coeffs","grad_varmax");
     }
 
-    // also rename the Coeffs used for the mean of the gradient
-    AuxCoeffs(i).replaceLabelString("coeffs","grad_mean");
   }
+  parseFilenames("ADAM_STATE_FILE", state_fnames_, "adam_state.data");
+  if(amsgrad_) {
+    parseFilenames("ADAM_VARMAX_STATE_FILE", varmax_state_fnames_, "adam_varmax_state.data");
+  }
+
+  if(getRestart()) {
+    time_ = getIterationCounter();
+    log.printf("  Adam restarting at time step %u\n", time_);
+    
+    for(unsigned int i = 0; i < numberOfCoeffsSets(); i++) {
+      IFile ifile;
+      ifile.link(*this);
+      if(useMultipleWalkers()) {
+        ifile.enforceSuffix("");
+      }
+      // Read VarCoeffs
+      if(ifile.FileExist(state_fnames_[i])) {
+        ifile.open(state_fnames_[i]);
+        VarCoeffs(i).readFromFile(ifile, true, true);
+        ifile.close();
+        log.printf("  Read Adam 2nd moment (variance) from file %s\n", state_fnames_[i].c_str());
+      } else {
+        log.printf("  WARNING: Adam state file %s not found, starting 2nd moment from zero\n", state_fnames_[i].c_str());
+      }
+      
+      // Read VarmaxCoeffs from its own file
+      if(amsgrad_) {
+        if(ifile.FileExist(varmax_state_fnames_[i])) {
+          ifile.open(varmax_state_fnames_[i]);
+          VarmaxCoeffs(i).readFromFile(ifile, true, true);
+          ifile.close();
+          log.printf("  Read Adam max variance (AMSGrad) from file %s\n", varmax_state_fnames_[i].c_str());
+        } else {
+          log.printf("  WARNING: AMSGrad state file %s not found, starting max variance from zero\n", varmax_state_fnames_[i].c_str());
+        }
+      }
+    }
+  }
+
+  setupOFiles(state_fnames_, stateOFiles_, useMultipleWalkers());
+  if(amsgrad_) {
+    setupOFiles(varmax_state_fnames_, varmaxStateOFiles_, useMultipleWalkers());
+  }
+
+
 
   checkRead();
 }
@@ -188,8 +237,19 @@ void Opt_Adam::coeffsUpdate(const unsigned int c_id) {
 
   // coeff update
   Coeffs(c_id) -= scalefactor * AuxCoeffs(c_id) * var_coeffs_sqrt * CoeffsMask(c_id);
+  writeStateFiles(c_id); 
 }
 
+void Opt_Adam::writeStateFiles(const unsigned int c_id) {
+  if(stateOFiles_.size() > 0) {
+    VarCoeffs(c_id).setIterationCounterAndTime(getIterationCounter()+1, getTime());
+    VarCoeffs(c_id).writeToFile(*stateOFiles_[c_id], false);
+  }
+  if(amsgrad_ && varmaxStateOFiles_.size() > 0) {
+    VarmaxCoeffs(c_id).setIterationCounterAndTime(getIterationCounter()+1, getTime());
+    VarmaxCoeffs(c_id).writeToFile(*varmaxStateOFiles_[c_id], false);
+  }
+}
 
 
 }
